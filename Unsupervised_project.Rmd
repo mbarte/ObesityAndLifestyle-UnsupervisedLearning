@@ -1,0 +1,1136 @@
+---
+title: "Unsupervised proj"
+author: "Michele Bartesaghi"
+date: '2022-06-16'
+output: html_document
+---
+#IMPORT LIBRARIES
+```{r}
+library(ggplot2)
+library(tree)
+library(ISLR)
+library(gbm)
+library(JOUSBoost)
+library(maboost)
+library(rpart)
+library(nnet)
+library(tidyverse)
+library(dplyr)
+library(caret)
+library(tibble)
+library(MASS)
+library(class)
+library(maps)
+library(cluster)
+library(gower)
+library(factoextra)
+library(VIM)
+library(psych)
+library(proxy)
+library(klaR)
+library(FactoMineR)
+library(factoextra)
+```
+
+#FUNCTION TO FIND THE MODE OF A GIVEN VECTOR
+```{r}
+mymode<-function(x){
+  uniqx <- unique(x)
+  uniqx[which.max(tabulate(match(x, uniqx)))]
+}
+```
+
+#IMPORT DATA
+```{r}
+data <- as.data.frame(readr::read_csv("C:/Users/pc/Downloads/ObesityDataSet_raw_and_data_sinthetic.csv",show_col_types = FALSE))
+#head(data)
+
+#summary(data)
+#anyNA(data)  #no NA's
+```
+
+#REMOVE RESPONSE VARIABLE AND RENAME COLUMNS
+```{r}
+data <- data %>% dplyr::select(-NObeyesdad)  
+#we remove the response variable since we are doing a clustering problem
+cn <- c("gender", "age", "height", "weight","ow_history","caloric_food_freq", "vegetables_freq","meals_num","snacking_freq","smoke","water_intake","calories_monitoring","PA_freq","technology_daily_freq","alcohol_freq","mtrans")
+colnames(data) <- cn
+
+verification_df <- data %>% dplyr::select(height,weight)
+#save these two columns in a separate dataframe to visualise the number of clusters
+#later
+
+data <- data %>% 
+  mutate(bmi = round(weight/(height*height),1)) %>% 
+  dplyr::select(-c(height,weight)) %>% 
+  mutate(age = round(as.double(age),0), 
+         vegetables_freq = as.integer(vegetables_freq),
+         meals_num = as.integer(meals_num),
+         water_intake = as.integer(water_intake),
+         PA_freq = as.integer(PA_freq),
+         technology_daily_freq = as.integer(technology_daily_freq)) %>% 
+  dplyr::select(gender,age,bmi, everything())
+```
+
+
+```{r}
+unique(data$snacking_freq) 
+#"Sometimes","Frequently","Always","no"  
+unique(data$alcohol_freq) 
+#"Sometimes","Frequently","Always","no"  
+unique(data$mtrans)  
+#"Public_Transportation","Walking","Automobile","Motorbike","Bike" 
+unique(data$NObeyesdad) 
+#"Normal_Weight","Overweight_Level_I" ,"Overweight_Level_II","Obesity_Type_I","Insufficient_Weight","Obesity_Type_II","Obesity_Type_III"
+```
+
+#VISUALISATION
+```{r}
+#gender visualisation
+male_perc <- nrow(data %>% dplyr::select(gender) %>% filter(gender == "Male"))/length(data$gender)*100
+female_perc <- nrow(data %>% dplyr::select(gender) %>% 
+                      filter(gender == "Female"))/length(data$gender)*100
+
+pgen <- data %>%  
+  count(gender) %>% 
+  mutate("perc" = round(c(female_perc,male_perc),2))
+
+pgen <- pgen %>% 
+  arrange(desc(gender)) %>%
+  mutate(prop = n / sum(pgen$perc) *100) %>%
+  mutate(ypos = cumsum(prop)- 0.5*prop )
+
+ggplot(pgen, aes(x="", y=n, fill=gender)) +
+  geom_bar(stat="identity", width=1,color="white")+
+  coord_polar("y",0,1)+
+  labs(x = "", y = "",title="Gender")+
+  theme_minimal()+ # remove background, grid, numeric labels
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  geom_text(aes(y = ypos, label = perc), color = "white", size=6) +
+  scale_fill_brewer(palette="Set2")
+
+rm(pgen)
+```
+
+```{r}
+#age for different genders
+data$age_group <- cut(data$age, c(0,20,24,35,70), labels = c("<21","21-24","25-35",">35") )
+
+ggplot(data,aes(x=age_group, fill=gender))+
+  geom_bar(col="black")+
+  facet_wrap(.~gender)+
+  stat_count(aes(y=..count.., label=..count..), vjust=-0.5,geom="text", col="black", size=3.5)+
+  labs(x="Age Group", y = "Count", title="Age distribution", fill= "Sex")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+```
+
+```{r}
+#bmi related to different features:
+#ow_history
+data$bmi_cat <- ifelse(data$bmi >= 13 & data$bmi < 16, "<16bmi",
+                   ifelse(data$bmi >= 16 & data$bmi < 17, "16-17bmi",
+                          ifelse(data$bmi >= 17 & data$bmi < 18.5, "17-18.5bmi",
+                                 ifelse(data$bmi >= 18.5 & data$bmi < 25 , "18.5-25bmi",
+                                        ifelse(data$bmi >= 25 & data$bmi < 30 , "25-30bmi",
+                                               ifelse(data$bmi >= 30 & data$bmi < 40,"30-40bmi",">40bmi"))))))
+
+#data %>%  filter(bmi > 40) %>%  dplyr::select(bmi_cat,ow_history) 
+
+ggplot(data, aes(x=bmi_cat, fill= as.factor(ow_history)))+
+  geom_bar(col="black", alpha=0.9)+
+  scale_fill_brewer(label=c("No","Yes"),palette="Set2")+
+  labs(x=" ", fill="Overweight family history", title="BMI vs family history")+
+  theme_minimal()+
+  theme(plot.title= element_text(face = "bold", hjust=0.5))
+
+#smoke
+ggplot(data, aes(x=bmi_cat, fill= as.factor(smoke)))+
+  geom_bar(col="black", alpha=0.9)+
+  scale_fill_brewer(label=c("No","Yes"),palette="Set2")+
+  labs(x=" ", fill="smoke", title="BMI vs smoke")+
+  theme_minimal()+
+  theme(plot.title= element_text(face = "bold", hjust=0.5))
+#not so interesting, since 98% of the observations are about non smokers
+table(data$smoke)[[1]]/length(data$smoke)
+
+#snacking_freq
+ggplot(data, aes(x=bmi_cat, fill= as.factor(snacking_freq)))+
+  geom_bar(col="black", alpha=0.9)+
+  scale_fill_brewer(label=c("no","Sometimes","Frequently", "Always"),palette="Set2")+
+  labs(x=" ", fill="Snaking between meals", title="BMI vs snacking")+
+  theme_minimal()+
+  theme(plot.title= element_text(face = "bold", hjust=0.5))
+
+#PA_freq
+ggplot(data, aes(x=bmi_cat, fill= as.factor(PA_freq)))+
+  geom_bar(col="black", alpha=0.9)+
+  scale_fill_brewer(label=c("Never","Sometimes","Frequently","Always"),palette="Set2")+
+  labs(x=" ", fill="Physical activity", title="BMI vs physical activity")+
+  theme_minimal()+
+  theme(plot.title= element_text(face = "bold", hjust=0.5))
+
+data <- data %>% dplyr::select(-c(bmi_cat, age_group))
+```
+
+#check for outliers
+```{r}
+#prepare a boxplot for every numeric variable
+#select numeric features
+data_num <- select_if(data,is.numeric) 
+#create a tibble with two columns: the feature name and the values
+data_num_box <-data_num %>% gather(variable,values,1:7)
+
+ggplot(data_num_box)+
+  geom_boxplot(aes(x=variable,y=values), fill = "salmon") + 
+  facet_wrap(~variable,ncol=3,scales="free") + 
+  theme(strip.text.x = element_blank(),
+        text = element_text(size=12))
+
+# summary(boxplot.stats(data$age))  #160  (from 36 years old on)
+# summary(boxplot.stats(data$bmi))
+# summary(boxplot.stats(data$vegetables_freq))
+# summary(boxplot.stats(data$meals_num))
+# summary(boxplot.stats(data$water_intake))
+# summary(boxplot.stats(data$PA_freq))
+# summary(boxplot.stats(data$technology_daily_freq))
+
+#we don't observe outliers. Removing age outliers would mean remove individuals from
+#the survey, whilst I decide not to consider the 75 points in PA_freq as outliers
+
+rm(data_num_box)
+```
+
+#CORRELATION 
+```{r}
+#correlation between numerical variables. Doesn't make sense to check for correlation
+#among categorical ones, because many features have the same answer options
+library(corrplot)
+correlation <- cor(data_num)
+corrplot(correlation,type = "upper", method = "number", tl.col = "black",tl.srt = 45)
+
+rm(data_num)
+rm(correlation)
+```
+
+
+```{r}
+#factors
+data[,!(sapply(data, is.numeric))] <- lapply(data[,!(sapply(data, is.numeric))], factor) 
+
+data[,(sapply(data, is.integer))] <- lapply(data[,(sapply(data, is.integer))], factor) 
+
+head(data)
+#now I only have factors and numeric
+```
+
+####MIXED DATA
+
+### there are duplicate rows. I found out that data was generated synthetically,
+###therefore I tried to remove duplicate rows. Ineffective
+
+```{r}
+#data <- data %>% distinct() #not beneficial
+```
+
+#MFA
+```{r}
+data <- data %>%  dplyr::select(age, bmi,
+                                gender, ow_history, 
+                                technology_daily_freq, PA_freq, mtrans, calories_monitoring,
+                                caloric_food_freq, vegetables_freq, meals_num, snacking_freq, water_intake,
+                                smoke, alcohol_freq)
+data.mfa <- MFA(data, 
+            group = c(2, 2, 4,5, 2), 
+            type = c("s", rep("n",4)),
+            name.group = c("physical status", "hereditary traits", "everyday life habits", "eating habits","vices"),
+            graph = FALSE)
+```
+
+```{r}
+eig.val <- get_eigenvalue(data.mfa)
+head(eig.val)
+fviz_screeplot(data.mfa)
+```
+```{r}
+group <- get_mfa_var(data.mfa, "group")
+group
+
+fviz_mfa_var(data.mfa, "group", col.var = "cos2", gradient.col = "Set2")
+ # correlation between groups and dimensions. The coordinates of the everyday life h
+#abits and physical status  on the first dimension are almost identical. 
+#This means that they contribute similarly to the first dimension. 
+#Concerning the second dimension, everyday life habits and eating habits  have the highest 
+#coordinates indicating a highest contribution to the second dimension.
+```
+```{r}
+# Contribution to the first dimension
+fviz_contrib(data.mfa, "group", axes = 1)
+# Contribution to the second dimension
+fviz_contrib(data.mfa, "group", axes = 2)
+
+
+fviz_contrib(data.mfa, choice = "quali.var", axes = 1, top = 20,
+             palette = "Set1")
+```
+```{r}
+fviz_mfa_var(data.mfa, "quanti.var", col.var = "contrib", 
+             gradient.cols = "Set2",  repel = TRUE)
+fviz_mfa_var(data.mfa, "quali.var", 
+             gradient.cols = "Set2", repel = TRUE)
+
+
+fviz_mfa_var(data.mfa, "quanti.var", col.var = "cos2", 
+             gradient.cols = "Set2",  repel = TRUE)
+fviz_mfa_var(data.mfa, "quali.var", col.var = "cos2", 
+             gradient.cols = "Set2", repel = TRUE)
+
+```
+```{r}
+ind <- get_mfa_ind(data.mfa)
+ind
+
+fviz_mfa_ind(data.mfa, col.ind = "cos2", 
+             gradient.cols = "Set2",
+             repel = TRUE)
+
+fviz_mfa_ind(data.mfa, 
+             habillage = "caloric_food_freq", # color by groups 
+             palette = "jco",
+             addEllipses = TRUE, ellipse.type = "confidence", 
+             repel = TRUE # Avoid text overlapping
+             )
+```
+```{r}
+fviz_mfa_axes(data.mfa)
+```
+<!-- #FACTOR ANALYSIS -famd -->
+
+<!-- ```{r} -->
+<!-- # the continuous variables are scaled to unit variance and the categorical variables  -->
+<!-- # are transformed into a disjunctive data table (crisp coding) and then scaled using -->
+<!-- # the specific scaling of MCA. This ensures to balance the influence of both continous -->
+<!-- # and categorical variables in the analysis. -->
+
+<!-- data.famd <- FAMD(data, ncp=15, graph = FALSE) -->
+<!-- data.famd -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+
+<!-- get_eigenvalue(data.famd) -->
+<!-- #first 5 dimensions explaining too little variance. We used ncp=10 -->
+
+<!-- #visualise the percentages of variance explained by each dimension -->
+<!-- fviz_screeplot(data.famd, addlabels = TRUE, ylim = c(0, 45)) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- #VARIABLES -->
+<!-- var <- get_famd_var(data.famd)  #extract variables results -->
+
+<!-- #variables contributions to dimensions -->
+<!-- fviz_contrib(data.famd, "var", axes = 1) -->
+<!-- fviz_contrib(data.famd, "var", axes = 2) -->
+<!-- fviz_contrib(data.famd, "var", axes = c(1,2)) -->
+<!-- head(round(var$contrib,2),10) -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- #distinction between qualitative and quantitative -->
+<!-- fviz_famd_var(data.famd, repel = TRUE, col.var = "contrib", gradient.cols= "Set2") -->
+<!-- #colour based on the extent of the contribution -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- fviz_famd_var(data.famd, "quanti.var", col.var = "contrib", -->
+<!--              gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),  -->
+<!--              repel = TRUE) -->
+
+<!-- plot(data.famd, choix = "quali", habillage = 13, graph.type = "ggplot",autoLab = "auto") -->
+
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- #INDIVIDUALS -->
+<!-- ind <- get_famd_ind(data.famd)  #extract results about individuals -->
+
+<!-- fviz_pca_ind(data.famd, col.ind = "cos2",  -->
+<!--              gradient.cols = "Set2", -->
+<!--              repel = TRUE) -->
+<!-- #colored based on the quality of representation: how well it is represented in  -->
+<!-- #these two dimensions -->
+<!-- #very few points well represented -->
+
+<!-- fviz_mfa_ind(data.famd,  -->
+<!--              habillage = 14, # color by groups  -->
+<!--              palette = "Set2", -->
+<!--              addEllipses = TRUE, ellipse.type = "confidence",  -->
+<!--              repel = TRUE # Avoid text overlapping -->
+<!--              )  -->
+<!-- #we draw the samples and colour them according to a certain variable -->
+
+<!-- #during the analysis variables are normalized automatically to balance the influence -->
+<!-- #of each set of data -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- res.desc <- dimdesc(data.famd, axes = c(1,2)) -->
+<!-- # Description of dimension 1 -->
+<!-- res.desc[[1]] -->
+<!-- # Description of dimension 2 -->
+<!-- res.desc[[2]] -->
+<!-- ``` -->
+
+##CLUSTERING
+#hierarchical
+```{r}
+# apply hclust function from cluster R package in order to cluster our dataset.
+
+# The object returned by hclust function contains information about solutions with 
+# different numbers of clusters, we pass the cutree function the cluster object and
+# the number of clusters we’re interested in.
+#We identify the appropriate number of clusters based on Dendrogram.
+
+
+# calculate distance (factors needed). This is my dissimilarity matrix
+gower_dist<-daisy(data, metric = "gower")
+#gower's distance handles both continuous and categorical data
+#gower measure normalizes continuous variables by their respective ranges
+
+# hierarchical clustering
+hc_visual<-hclust(gower_dist, method = "ward.D2")
+
+hc <- hclust(gower_dist, method = "average")
+coph.a=cophenetic(hc)
+# measure of how faithfully a dendrogram preserves the pairwise distances between the original unmodeled data points.
+cor(gower_dist,coph.a) 
+
+# single linkage: 0.527
+# complete linkage: 0.506
+# centroid: 0.594
+# ward.D2: 0.380   -> lower correlation, but way better clustering
+# average: 0.699
+
+# dendrogram 
+plot(hc_visual, cex = 0.6, hang=-1, labels=FALSE)
+rect.hclust(hc_visual, k=4, border="red")
+#I don't spot chaining: poorly separated, but distinct clusters are merged at an early stage
+#7 clusters bring a perfect division based mainly on the bmi
+#k=4 is a good compromise 
+
+# choose k, number of clusters 
+cluster<-cutree(hc_visual, k=4)
+# add cluster to original data 
+data<-cbind(data,cluster = as.factor(cluster))
+table(data$cluster)
+
+
+#I want about 4 profiles
+#not so healty, not healthy lifestyle
+#healthy lifestyle, healthy condition
+#not healty, risky lifestyle
+#helathy, risky lifestyle
+```
+
+```{r}
+#table to summarise
+cluster_data <- data %>% group_by(cluster) %>% 
+  summarise(gender = mymode(gender),
+            age = round(median(age),0),
+            bmi = round(mean(bmi),1),
+            oh = mymode(ow_history),
+            mtrans = mymode(mtrans),
+            meals = mymode(meals_num),
+            PA = mymode(PA_freq),
+            cal_food = mymode(caloric_food_freq),
+            smoke = mymode(smoke),
+            snacking = mymode(snacking_freq),
+            vegetables = mymode(vegetables_freq),
+            water = mymode(water_intake),
+            monitoring = mymode(calories_monitoring),
+            technology = mymode(technology_daily_freq),
+            alcohol = mymode(alcohol_freq)
+            )
+#complete: with k=6 we have insignificant clusters, so k=5 is better, but still...
+          #different k values don't seem to improve the situation
+
+# average: more distinct clusters! k=4 present a nice result, but also k=5 is nice
+          #we choose k=5 to be coherent with the elbow chart
+cluster_data
+data <- data[,-16]
+xtable::xtable(cluster_data)
+```
+
+#frequency of answer
+```{r}
+ggplot(data, aes(x=smoke, fill=smoke)) +
+  geom_bar()+
+  labs(x = "", y = "",title="Smoking frequency")+
+  stat_count(aes(y=..count.., label=..count..), vjust=-0.5,geom="text", col="black", size=3.5)+
+  theme_minimal()+ 
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set3")
+
+ggplot(data, aes(x=snacking_freq, fill=snacking_freq)) +
+  geom_bar(position = "dodge")+
+  labs(x = "", y = "",title="Snacking frequency")+
+  stat_count(aes(y=..count.., label=..count..), vjust=-0.5,geom="text", col="black", size=3.5)+
+  theme_minimal()+ 
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set3")
+
+
+ggplot(data, aes(x=meals_num, fill=meals_num)) +
+  geom_bar(position = "dodge")+
+  labs(x = "", y = "",title="Number of meals")+
+  stat_count(aes(y=..count.., label=..count..), vjust=-0.5,geom="text", col="black", size=3.5)+
+  theme_minimal()+ 
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set3")
+
+ggplot(data, aes(x=mtrans, fill=mtrans)) +
+  geom_bar(position = "dodge")+
+  labs(x = "", y = "",title="Mean of transportation")+
+  stat_count(aes(y=..count.., label=..count..), vjust=-0.5,geom="text", col="black", size=3.5)+
+  theme_minimal()+ 
+  theme(plot.title=element_text(face="bold",  hjust=0.5), axis.text.x = element_text(angle = 20))+
+  scale_fill_brewer(palette="Set3")
+```
+
+
+
+```{r}
+
+#clustering with mixed data types
+library(clustMixType)
+
+set.seed(1)
+lambda <- lambdaest(data, num.method = 1,fac.method = 2)
+mixed_data_clust <- kproto(data, 4, lambda = lambda)
+#summary(mixed_data_clust)
+
+
+cluster <- factor(mixed_data_clust$cluster, order =  TRUE, levels = c(1:4))
+data <- data.frame(data, cluster)
+result_df <- mixed_data_clust$centers
+Member <- mixed_data_clust$size
+result <- data.frame(Member, result_df)
+result
+xtable::xtable(result)
+```
+
+```{r}
+#profiles 
+data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=cluster,y=bmi, fill=cluster))+
+  geom_boxplot()+
+  labs(x = "", y = "bmi", title = "BMI", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")+
+  geom_jitter(shape=19, position=position_jitter(0.2), alpha=0.2)
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=gender, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Gender", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=ow_history, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Overweight family history", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=mtrans, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Means of transportation", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=alcohol_freq, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Alcohol consumption", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5, size = 18))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=smoke, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Smoking", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=PA_freq, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Physical activity", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=cluster, y= age, fill=cluster))+
+  geom_boxplot()+
+  labs(x = "",y = "Count", title = "Age", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")+
+  geom_jitter(shape=19, position=position_jitter(0.2), alpha=0.2)
+
+data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=meals_num, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Number of meals", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=snacking_freq, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Snacking frequency", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=calories_monitoring, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Calories intake monitoring", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=caloric_food_freq, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Caloric food consumption", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+ 
+data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=water_intake, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Water intake", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=technology_daily_freq, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Time spent on technology", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+ 
+data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=vegetables_freq, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Vegetables consumption", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+```
+
+
+```{r}
+#mixed_data_clust
+kproto_results <- data %>%
+  mutate(cluster = mixed_data_clust$cluster) %>%
+  group_by(cluster) %>%
+  do(the_summary = summary(.))
+
+
+tsne_obj <- Rtsne::Rtsne(gower_dist, is_distance = TRUE)
+#embedding of high dimensional data in low-dimensional space
+attempt <- tsne_obj$Y %>%
+  data.frame() %>%
+  setNames(c("X", "Y")) %>%
+  mutate(cluster = factor(mixed_data_clust$cluster))
+ggplot(aes(x = X, y = Y), data = attempt) +
+  geom_point(aes(color = cluster))+
+  labs(x="",y = "", title = "Points division into four clusters", fill= "Cluster")+
+  theme_minimal()+ 
+  theme(plot.title=element_text(face="bold",  hjust=0.5))
+  scale_color_brewer(palette = "Set2")
+  
+data <- data[,-16]
+```
+
+<!-- #CLUSTERING -->
+<!-- # ```{r} -->
+<!-- # #distance matrix -->
+<!-- # gower_dist <- daisy(data, metric = "gower") -->
+<!-- # gower_mat <- as.matrix(gower_dist) -->
+<!-- #  -->
+<!-- #  -->
+<!-- # sil_width <- c(NA) -->
+<!-- # for(i in 2:8){   -->
+<!-- #   pam_fit <- pam(gower_dist, diss = TRUE, k = i)   -->
+<!-- #   sil_width[i] <- pam_fit$silinfo$avg.width   -->
+<!-- # } -->
+<!-- # plot(1:8, sil_width, -->
+<!-- #      xlab = "Number of clusters", -->
+<!-- #      ylab = "Silhouette Width") -->
+<!-- # lines(1:8, sil_width) -->
+<!-- # ``` -->
+<!-- #  -->
+<!-- # ```{r} -->
+<!-- # k <- 6 -->
+<!-- # pam_fit <- pam(gower_dist, diss = TRUE, k) -->
+<!-- # pam_results <- data %>% -->
+<!-- #   mutate(cluster = pam_fit$clustering) %>% -->
+<!-- #   group_by(cluster) %>% -->
+<!-- #   do(the_summary = summary(.)) -->
+<!-- # #pam_results$the_summary -->
+<!-- # ``` -->
+<!-- #  -->
+<!-- # ```{r} -->
+<!-- # tsne_obj <- Rtsne::Rtsne(gower_dist, is_distance = TRUE) -->
+<!-- # tsne_data <- tsne_obj$Y %>% -->
+<!-- #   data.frame() %>% -->
+<!-- #   setNames(c("X", "Y")) %>% -->
+<!-- #   mutate(cluster = factor(pam_fit$clustering)) -->
+<!-- # ggplot(aes(x = X, y = Y), data = tsne_data) + -->
+<!-- #   geom_point(aes(color = cluster)) -->
+<!-- # ``` -->
+
+#ONLY CATEGORICAL DATA
+
+#IMPORT DATA
+```{r}
+data <- as.data.frame(readr::read_csv("C:/Users/pc/Downloads/ObesityDataSet_raw_and_data_sinthetic.csv",show_col_types = FALSE))
+#head(data)
+
+#summary(data)
+#anyNA(data)  #no NA's
+```
+
+#REMOVE RESPONSE VARIABLE AND RENAME COLUMNS
+```{r}
+data <- data %>% dplyr::select(-NObeyesdad)  
+#we remove the response variable since we are doing a clustering problem
+cn <- c("gender", "age", "height", "weight","ow_history","caloric_food_freq", "vegetables_freq","meals_num","snacking_freq","smoke","water_intake","calories_monitoring","PA_freq","technology_daily_freq","alcohol_freq","mtrans")
+colnames(data) <- cn
+
+verification_df <- data %>% dplyr::select(height,weight)
+#save these two columns in a separate dataframe to visualise the number of clusters
+#later
+
+data <- data %>% 
+  mutate(bmi = round(weight/(height*height),1)) %>% 
+  dplyr::select(-c(height,weight)) %>% 
+  mutate(age = round(as.double(age),0), 
+         vegetables_freq = as.integer(vegetables_freq),
+         meals_num = as.integer(meals_num),
+         water_intake = as.integer(water_intake),
+         PA_freq = as.integer(PA_freq),
+         technology_daily_freq = as.integer(technology_daily_freq)) %>% 
+  dplyr::select(gender,age,bmi, everything())
+```
+
+
+```{r}
+#transform everything
+data$age <- ifelse(data$age >= 11 & data$age < 21, "10-20",
+                   ifelse(data$age >= 21 & data$age < 31, "21-30",    #legal drinking
+                          ifelse(data$age >= 31 & data$age < 41, "31-40",    #full time workers
+                                 ifelse(data$age >= 41 & data$age < 51, "41-50","51-61"))))   #less energy
+
+data$bmi <- ifelse(data$bmi >= 13 & data$bmi < 18.5, "<18.5bmi",
+                                 ifelse(data$bmi >= 18.5 & data$bmi < 25 , "18.5-25bmi",
+                                        ifelse(data$bmi >= 25 & data$bmi < 30 , "25-30bmi",
+                                               ifelse(data$bmi >= 30 & data$bmi < 35,"30-35bmi",
+                                                      ifelse(data$bmi >= 35 & data$bmi < 40, "35-40bmi", ">40bmi")))))
+
+data$vegetables_freq <- ifelse(data$vegetables_freq == 1, "Never(veg)",
+                    ifelse(data$vegetables_freq == 2, "Sometimes(veg)", "Always(veg)"))
+
+data$meals_num <- ifelse(as.integer(data$meals_num) == 1, "1 meal",
+                    ifelse(as.integer(data$meals_num) == 2, "2 meals",
+                           ifelse(as.integer(data$meals_num) == 3, "3 meals", ">3 meals")))
+
+data$water_intake <- ifelse(data$water_intake == 1, "<1L",
+                    ifelse(data$water_intake == 2, "1-2L", ">3L"))
+
+data$PA_freq <- ifelse(data$PA_freq ==0, "Inactive",
+                   ifelse(data$PA_freq ==1, "Moderately active",
+                          ifelse(data$PA_freq ==2, "Active", "Sporty")))
+
+data$technology_daily_freq <- ifelse(as.integer(data$technology_daily_freq) == 0, "0-2h",
+                    ifelse(as.integer(data$technology_daily_freq) == 2, "3-5h",">5h"))
+
+```
+
+```{r}
+data[,sapply(data, is.character)] <- lapply(data[,sapply(data, is.character)], factor)
+#answers to a survey
+```
+
+```{r, fig.height=10, fig.width=10}
+
+homals_M <- Gifi::homals(data)
+
+summary(homals_M)
+
+v_color <- viridis::viridis(n=ncol(data))
+
+plot(homals_M,
+     col.points = v_color, asp = 1)
+```
+
+#tried with kmodes
+```{r}
+kmodel <- kmodes(data, modes=4, iter.max = 10)
+plot(kmodel$withindiff, type = "b")
+
+
+k = c(2:10)
+set.seed(123)
+WDIFF = c()     #https://en.wikipedia.org/wiki/Simple_matching_coefficient
+for (x in k) {
+  kmodel = kmodes(data, modes = x, iter.max = 10)
+  wdiff = sum(kmodel$withindiff)
+  WDIFF = append(WDIFF, wdiff)
+}
+kmodel$cluster  #where each point is allocated
+kmodel$size   #number of points in each cluster
+
+k_df = data.frame('K' = k, 'Total within difference' = WDIFF)
+ggplot(k_df, aes(x = K, y = WDIFF)) +
+  geom_point() +
+  geom_line()
+#elbow plot: the elbow is at k = 3 or k=4
+
+# there is not really such a thing as "the optimal number of clusters" in k-modes (as in k-means) ; your best choice (stress : YOUR best choice ...) is the result of a compromise between the simplicity of your model (few clusters but low specificity) and its descriptive performance (many clusters with large specificity)
+```
+
+```{r}
+set.seed(123)
+k = 5#from the elbow plot
+kmodel = kmodes(data, modes = k)
+table(kmodel$cluster)
+
+aggregate(data, by=list(cluster=kmodel$cluster), mymode)
+aggregate(data, by=list(cluster=kmodel$cluster), mymode)
+aggregate(data, by=list(cluster=kmodel$cluster), mymode)
+aggregate(data, by=list(cluster=kmodel$cluster), mymode)
+xtable::xtable(aggregate(data, by=list(cluster=kmodel$cluster), mymode))
+
+data_cluster = cbind(data, cluster = as.factor(kmodel$cluster))
+
+cn <- c("gender", "age", "bmi","ow_history","caloric_food_freq", "vegetables_freq","meals_num","snacking_freq","smoke","water_intake","calories_monitoring","PA_freq","technology_daily_freq","alcohol_freq","mtrans")
+
+cluster1modes <- NULL
+cluster2modes <- NULL
+cluster3modes <- NULL
+cluster4modes <- NULL
+cluster5modes <- NULL
+
+
+for (j in 1:15){
+  cluster1modes[j] <- mymode(data_cluster[data_cluster$cluster==1,j])
+}
+for (k in 1:15){
+  cluster2modes[k] <- mymode(data_cluster[data_cluster$cluster==2,k])
+}
+for (i in 1:15){
+  cluster3modes[i] <- mymode(data_cluster[data_cluster$cluster==3,i])
+}
+for (i in 1:15){
+  cluster4modes[i] <- mymode(data_cluster[data_cluster$cluster==4,i])
+}
+ for (i in 1:15){
+ cluster5modes[i] <- mymode(data_cluster[data_cluster$cluster==5,i])
+}
+
+cluster1 <- data.frame(Cluster_1 = cluster1modes, row.names = cn)
+cluster2 <- data.frame(Cluster_2 = cluster2modes, row.names = cn)
+cluster3 <- data.frame(Cluster_3 = cluster3modes, row.names = cn)
+cluster4 <- data.frame(Cluster_4 = cluster4modes, row.names = cn)
+cluster5 <- data.frame(Cluster_5 = cluster4modes, row.names = cn)
+
+clusters <- cbind(cluster1,cluster2) %>%  
+   cbind(cluster3) %>%
+   cbind(cluster4)%>% 
+   cbind(cluster5)  
+
+clusters
+#k=5 doesn't seem to be significantly different even wrt to bmi
+```
+
+
+```{r}
+
+plot_data <- cbind(data_cluster,verification_df) 
+ggplot(plot_data, aes(x= weight, y = height, col= cluster))+
+  geom_point()
+
+#kmodes result is extremely poor
+
+ggplot(plot_data, aes(y = bmi, fill= cluster))+
+  geom_bar()+
+  facet_wrap(~gender)
+```
+
+#hierarchical
+```{r}
+# After selecting features and calculating the distance matrix, it is time to apply hclust function from cluster R package in order to cluster our dataset.
+# 
+# The object returned by hclust function contains information about solutions with different numbers of clusters, we pass the cutree function the cluster object and the number of clusters we’re interested in. We identify the appropriate number of clusters based on Dendrogram.
+data <- data[,-16]
+library(cluster)
+library(gower)
+# calculate distance (factors needed)
+gower_dist<-daisy(data, metric = "gower")
+# hierarchical clustering
+hc<-hclust(gower_dist, method = "ward.D2")
+# dendrogram 
+plot(hc, labels=FALSE)
+rect.hclust(hc, k=4, border="red")
+coph.c=cophenetic(hc)
+cor(gower_dist,coph.c) 
+
+# complete: 0.42
+# average: 0.67
+#single: 0.52
+# ward.D2: 0.38
+
+
+# choose k, number of clusters 
+cluster<-cutree(hc, k=4)
+# add cluster to original data 
+data<-cbind(data, cluster = as.factor(cluster))
+
+```
+
+```{r}
+#table to summarise
+cluster_data <- data %>% group_by(cluster) %>% 
+  summarise(gender = mymode(gender),
+            age = mymode(age),
+            bmi = mymode(bmi),
+            oh = mymode(ow_history),
+            mtrans = mymode(mtrans),
+            meals = mymode(meals_num),
+            PA = mymode(PA_freq),
+            cal_food = mymode(caloric_food_freq),
+            smoke = mymode(smoke),
+            snacking = mymode(snacking_freq),
+            vegetables = mymode(vegetables_freq),
+            water = mymode(water_intake),
+            monitoring = mymode(calories_monitoring),
+            technology = mymode(technology_daily_freq),
+            alcohol = mymode(alcohol_freq)
+            )
+#complete: with k=6 we have insignificant clusters, so k=5 is better, but still...
+          #different k values don't seem to improve the situation
+
+# average: more distinct clusters! k=4 present a nice result, but also k=5 is nice
+          #we choose k=5 to be coherent with the elbow chart
+cluster_data
+xtable::xtable(cluster_data)
+```
+
+```{r}
+#profiles
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=bmi, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "BMI", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=gender, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Gender", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=ow_history, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Overweight family history", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=mtrans, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Means of transportation", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=alcohol_freq, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Alcohol assumption", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=smoke, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Smoking", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=PA_freq, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Physical activity", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=age, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Age", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=meals_num, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Number of meals", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=snacking_freq, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Snacking frequency", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=calories_monitoring, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Calories intake monitoring", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=caloric_food_freq, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Caloric food consumption", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+ 
+data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=water_intake, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Water intake", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+ data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=technology_daily_freq, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Time spent on technology", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+ 
+data %>% 
+  group_by(cluster) %>% 
+  ggplot(aes(x=vegetables_freq, fill=cluster))+
+  geom_bar(position="dodge",col="black")+
+  labs(y = "Count", title = "Vegetables consumption", fill= "Cluster")+
+  theme_minimal()+
+  theme(plot.title=element_text(face="bold",  hjust=0.5))+
+  scale_fill_brewer(palette="Set2")
+
+```
+
+
+```{r}
+
+plot_data <- cbind(data,verification_df) 
+plot_data %>% 
+  ggplot(aes(x = weight, y=height, col=cluster))+
+  geom_point()
+
+ggplot(plot_data, aes(y = bmi, fill= cluster))+
+  geom_bar()+
+  theme_minimal()+
+  facet_wrap(~gender)
+
+ggplot(plot_data, aes(y = bmi, fill= cluster))+
+  geom_bar()+
+  theme_minimal()+
+  facet_wrap(~mtrans)
+
+```
+
+```{r}
+library(scatterplot3d)
+shapes = c(16,17,19)
+scatterplot3d(plot_data$height, 
+              plot_data$weight,
+              plot_data$weight/(plot_data$height*plot_data$height),
+              color = plot_data$cluster, pch=19, 
+              xlab = "height", ylab = "weight", zlab = "bmi", box=FALSE)
+
+data <- data[,-16]
+```
